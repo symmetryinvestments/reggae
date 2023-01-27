@@ -430,12 +430,16 @@ private string[] dubImportFlags(in imported!"reggae.options".Options options) {
     import std.path: buildPath;
     import reggae.path: dubPackagesDir;
 
-    enum dubSelectionsJson = import("dub.selections.json");
-    enum dubVersion = dubSelectionsJson
-        .parseJSON
-        ["versions"]
-        ["dub"]
-        .str;
+    version(all) {
+        enum dubVersion = "1.35.0";
+    } else {
+        enum dubSelectionsJson = import("dub.selections.json");
+        enum dubVersion = dubSelectionsJson
+            .parseJSON
+            ["versions"]
+            ["dub"]
+            .str;
+    }
     auto dubObj = new Dub(options.projectPath);
     dubObj.fetch("dub", Version(dubVersion), dubObj.defaultPlacementLocation, FetchOptions.none);
     const dubSourcePath = buildPath(dubPackagesDir, "dub", dubVersion, "dub", "source");
