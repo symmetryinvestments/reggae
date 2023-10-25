@@ -14,107 +14,68 @@ enum CompilationMode {
     options,  /// whatever the command-line option was
 }
 
-struct DubPackageName {
-    string value;
+struct Configuration {
+    string value = "default";
 }
 
 static if(imported!"reggae.config".isDubProject) {
 
-    import reggae.dub.info;
-    import reggae.types;
-    import reggae.build;
-    import reggae.rules.common;
-    import std.traits;
+    import reggae.build: Target;
+
+    alias dubConfigurationTarget = dubTarget;
+    alias dubDefaultTarget = dubTarget;
 
     /**
-     Builds the main dub target (equivalent of "dub build")
-    */
-    Target dubDefaultTarget(CompilerFlags compilerFlags = CompilerFlags(),
-                            LinkerFlags linkerFlags = LinkerFlags(),
-                            CompilationMode compilationMode = CompilationMode.options)
+       Builds a particular dub configuration (usually "default")
+     */
+    Target dubTarget(CompilationMode compilationMode)
         ()
     {
-        import reggae.config: options, configToDubInfo;
-
-        return dubDefaultTarget(
-            options,
-            configToDubInfo,
-            compilerFlags,
-            linkerFlags,
-            compilationMode
-        );
-    }
-
-    Target dubDefaultTarget(C)(
-        in imported!"reggae.options".Options options,
-        in C configToDubInfo,
-        CompilerFlags compilerFlags = CompilerFlags(),
-        LinkerFlags linkerFlags = LinkerFlags(),
-        CompilationMode compilationMode = CompilationMode.options)
-    {
-        const config = "default";
-        const dubInfo = configToDubInfo[config];
-        const targetName = dubInfo.targetName;
-        const allLinkerFlags = dubInfo.mainLinkerFlags ~ linkerFlags.value;
-
-        return dubTarget(
-            options,
-            targetName,
-            dubInfo,
-            compilerFlags.value,
-            allLinkerFlags,
+        return dubTarget!(
+            Configuration("default"),
             compilationMode,
         );
     }
 
-
     /**
-       A target corresponding to `dub test`
+       Builds a particular dub configuration (usually "default")
      */
-    Target dubTestTarget(CompilerFlags compilerFlags = CompilerFlags(),
-                         LinkerFlags linkerFlags = LinkerFlags())
-                         ()
+    Target dubTarget(
+        Configuration config = Configuration("default"),
+        CompilationMode compilationMode = CompilationMode.options,
+        )
+        ()
     {
-        static if (__VERSION__ < 2079 || (__VERSION__ >= 2081 && __VERSION__ < 2084)) {
-            // these dmd versions have a bug pertaining to separate compilation and __traits(getUnitTests),
-            // we default here to compiling all-at-once for the unittest build
-            enum compilationMode = CompilationMode.all;
-        }
-        else
-            enum compilationMode = CompilationMode.options;
-
-        return dubTestTarget!(compilerFlags, linkerFlags, compilationMode)();
+        import reggae.config: options, configToDubInfo;
+        return dubTarget(options, configToDubInfo, config, compilationMode);
     }
 
+
     /**
        A target corresponding to `dub test`
      */
-    Target dubTestTarget(CompilerFlags compilerFlags = CompilerFlags(),
-                         LinkerFlags linkerFlags = LinkerFlags(),
-                         CompilationMode compilationMode)
-                         ()
+    Target dubTestTarget(
+        CompilationMode compilationMode = CompilationMode.options,
+        imported!"std.typecons".Flag!"coverage" coverage = imported!"std.typecons".No.coverage)
+        ()
     {
         import reggae.config: options, configToDubInfo;
         return dubTestTarget(
             options,
             configToDubInfo,
-            compilerFlags,
-            linkerFlags,
-            compilationMode
+            compilationMode,
+            coverage,
         );
     }
 
     Target dubTestTarget(C)
         (in imported!"reggae.options".Options options,
-        in C configToDubInfo,
-        CompilerFlags compilerFlags = CompilerFlags(),
-        LinkerFlags linkerFlags = LinkerFlags(),
-        CompilationMode compilationMode = CompilationMode.options)
+         in C configToDubInfo,
+         in CompilationMode compilationMode = CompilationMode.options,
+         in imported!"std.typecons".Flag!"coverage" coverage = imported!"std.typecons".No.coverage)
     {
         import reggae.build : Target;
-        import reggae.dub.info: TargetType, targetName;
-        import reggae.rules.dub: dubTarget;
-        import std.exception : enforce;
+        import reggae.types: CompilerFlags;
 
         // No `dub test` config? Then it inherited some `targetType "none"`, and
         // dub has printed an according message - return a dummy target and continue.
@@ -122,226 +83,111 @@ static if(imported!"reggae.config".isDubProject) {
         if ("unittest" !in configToDubInfo)
             return Target(null);
 
-        const dubInfo = configToDubInfo["unittest"];
-        enforce(dubInfo.packages.length, "No dub packages found for the dub test configuration");
-        enforce(dubInfo.packages[0].mainSourceFile.length, "No mainSourceFile for the dub test configuration");
-
-        auto name = dubInfo.targetName;
-        const defaultDubInfo = configToDubInfo["default"];
-        if (defaultDubInfo.packages.length > 0 && defaultDubInfo.targetName == name) {
-            // The targetName of both default & test configs conflict (due to a bad
-            // `unittest` config in dub.{sdl,json}).
-            // Rename the test target to `ut[.exe]` to prevent conflicts in Ninja/make
-            // build scripts (in case the default config is included in the build too).
-            name = targetName(TargetType.executable, "ut");
-        }
-
-        return dubTarget(options,
-                         name,
-                         dubInfo,
-                         compilerFlags.value,
-                         linkerFlags.value,
-                         compilationMode);
-    }
-
-    /**
-     Builds a particular dub configuration (executable, unittest, etc.)
-     */
-    Target dubConfigurationTarget(Configuration config = Configuration("default"),
-                                  CompilerFlags compilerFlags = CompilerFlags(),
-                                  LinkerFlags linkerFlags = LinkerFlags(),
-                                  CompilationMode compilationMode = CompilationMode.options,
-                                  alias objsFunction = () { Target[] t; return t; },
-                                  )
-        () if(isCallable!objsFunction)
-    {
-        import reggae.config: options, configToDubInfo;
-
-        const dubInfo = configToDubInfo[config.value];
-
-        return dubTarget(options,
-                         dubInfo.targetName,
-                         dubInfo,
-                         compilerFlags.value,
-                         linkerFlags.value,
-                         compilationMode,
-                         objsFunction());
-    }
-
-    Target dubTarget(
-        TargetName targetName,
-        Configuration config,
-        CompilerFlags compilerFlags = CompilerFlags(),
-        LinkerFlags linkerFlags = LinkerFlags(),
-        CompilationMode compilationMode = CompilationMode.options,
-        alias objsFunction = () { Target[] t; return t; },
-     )
-        ()
-    {
-        import reggae.config: options, configToDubInfo;
-
         return dubTarget(
             options,
-            targetName,
-            configToDubInfo[config.value],
-            compilerFlags.value,
-            linkerFlags.value,
+            configToDubInfo,
+            Configuration("unittest"),
             compilationMode,
-            objsFunction(),
+            coverage ? CompilerFlags("-cov") : CompilerFlags(),
+        );
+    }
+
+    Target dubTarget(C)
+        (in imported!"reggae.options".Options options,
+         in C configToDubInfo,
+         in Configuration config = Configuration("default"),
+         in CompilationMode compilationMode = CompilationMode.options,
+         in imported!"reggae.types".CompilerFlags extraCompilerFlags = imported!"reggae.types".CompilerFlags())
+    {
+        return dubTarget(
+            options,
+            configToDubInfo[config.value],
+            compilationMode,
+            extraCompilerFlags,
         );
     }
 
     Target dubTarget(
         in imported!"reggae.options".Options options,
-        in TargetName targetName,
-        in DubInfo dubInfo,
-        in string[] compilerFlags,
-        in string[] linkerFlags = [],
+        in imported!"reggae.dub.info".DubInfo dubInfo,
         in CompilationMode compilationMode = CompilationMode.options,
-        Target[] extraObjects = [],
-        in size_t startingIndex = 0,
+        in imported!"reggae.types".CompilerFlags extraCompilerFlags = imported!"reggae.types".CompilerFlags(),
         )
+        @safe pure
+    {
+        import std.path: buildPath;
+
+        auto allObjs = dubInfo.toTargets(
+            compilationMode,
+            dubObjsDir(options, dubInfo),
+            extraCompilerFlags,
+        );
+
+        const targetPath = dubInfo.targetPath(options);
+        const name = fixNameForPostBuild(buildPath(targetPath, dubInfo.targetName.value), dubInfo);
+        auto target = objectsToTarget(dubInfo, name, allObjs);
+        const combinedPostBuildCommands = dubInfo.postBuildCommands;
+
+        return combinedPostBuildCommands.length == 0
+            ? target
+            : Target.phony(dubInfo.targetName.value ~ "_postBuild", combinedPostBuildCommands, target);
+    }
+
+    // This function needs some explaining in case somebody (probably
+    // me) tries to make things "better" by removing custom logic to
+    // produce the final binary.  For "reasons", dub does 1 pass to
+    // generate static and dynamic libraries, but 2 to generate
+    // executables. In the former case it calls the compiler once with
+    // `-lib` or `-shared` as appropriate, but in the latter it first
+    // generates an object file then links. Reggae can't copy this
+    // behaviour, because dub always builds all-at-once. Since we
+    // support building in other ways, especially since the default
+    // for reggae is to build per D package, even for libraries reggae
+    // needs to do it in 2 steps since in the general case there will
+    // be multiple object files. Instead of asking dub what it does,
+    // we generate our own object files then link/archive.
+    private Target objectsToTarget(
+        in imported!"reggae.dub.info".DubInfo dubInfo,
+        in string name,
+        Target[] allObjs,
+        )
+        @safe pure
     {
         import reggae.rules.common: staticLibraryTarget, link;
-        import reggae.types: TargetName;
-        import std.path: relativePath, buildPath;
+        import reggae.dub.info: TargetType;
+        import reggae.types: ExeName, Flags;
 
         const isStaticLibrary =
             dubInfo.targetType == TargetType.library ||
             dubInfo.targetType == TargetType.staticLibrary;
-        const sharedFlags = dubInfo.targetType == TargetType.dynamicLibrary
+        if(isStaticLibrary)
+            return staticLibraryTarget(name, allObjs);
+
+        if(dubInfo.targetType == TargetType.none)
+            return Target.phony(name, "", allObjs);
+
+        const maybeShared = dubInfo.targetType == TargetType.dynamicLibrary
             ? ["-shared"]
             : [];
-        const allLinkerFlags = linkerFlags ~ dubInfo.linkerFlags ~ sharedFlags;
-        auto allObjs = objs(options,
-                            targetName,
-                            dubInfo,
-                            compilerFlags,
-                            compilationMode,
-                            extraObjects,
-                            startingIndex);
+        const allLinkerFlags = dubInfo.linkerFlags ~ maybeShared;
 
-        const targetPath = dubInfo.targetPath(options);
-        const name = realName(TargetName(buildPath(targetPath, targetName.value)), dubInfo);
-
-        auto target = isStaticLibrary
-            ? staticLibraryTarget(name, allObjs)
-            : dubInfo.targetType == TargetType.none
-                ? Target.phony(name, "", allObjs)
-                : link(ExeName(name),
-                       allObjs,
-                       const Flags(allLinkerFlags));
-
-        const combinedPostBuildCommands = dubInfo.postBuildCommands;
-        return combinedPostBuildCommands.length == 0
-            ? target
-            : Target.phony(targetName.value ~ "_postBuild", combinedPostBuildCommands, target);
-    }
-
-    /**
-       All dub packages object files from the dependencies, but nothing from the
-       main package (the one actually being built).
-     */
-    Target[] dubDependencies(CompilerFlags compilerFlags = CompilerFlags())
-        () // runtime args
-    {
-        return dubDependencies!(Configuration("default"), compilerFlags)();
-    }
-
-
-    ///ditto
-    Target[] dubDependencies(Configuration config,
-                             CompilerFlags compilerFlags = CompilerFlags())
-        () // runtime args
-    {
-        import reggae.config: configToDubInfo;
-
-        const dubInfo = configToDubInfo[config.value];
-        const startingIndex = 1;
-
-        return objs(
-            dubInfo.targetName,
-            dubInfo,
-            compilerFlags.value,
-            CompilationMode.options,
-            [], // extra objects
-            startingIndex
-        );
-    }
-
-
-
-    /**
-       All dub object files for a configuration
-     */
-    Target[] dubObjects(Configuration config,
-                        CompilerFlags compilerFlags = CompilerFlags(),
-                        CompilationMode compilationMode = CompilationMode.options)
-        ()
-    {
-        import reggae.config: options, configToDubInfo;
-        const dubInfo = configToDubInfo[config.value];
-        return objs(options,
-                    dubInfo.targetName,
-                    dubInfo,
-                    compilerFlags.value,
-                    compilationMode);
-    }
-
-    /**
-       Object files from one dub package
-     */
-    Target[] dubPackageObjects(
-        DubPackageName dubPackageName,
-        CompilerFlags compilerFlags = CompilerFlags(),
-        CompilationMode compilationMode = CompilationMode.all,
-        )
-        ()
-    {
-        return dubPackageObjects!(
-            dubPackageName,
-            Configuration("default"),
-            compilerFlags,
-            compilationMode,
-        );
-    }
-
-    /**
-       Object files from one dub package
-     */
-    Target[] dubPackageObjects(
-        DubPackageName dubPackageName,
-        Configuration config = Configuration("default"),
-        CompilerFlags compilerFlags = CompilerFlags(),
-        CompilationMode compilationMode = CompilationMode.all,
-        )
-        ()
-    {
-        import reggae.config: configToDubInfo;
-        return configToDubInfo[config.value].packageNameToTargets(
-            dubPackageName.value,
-            compilerFlags.value,
-            compilationMode,
-        );
-    }
-
-
-    ImportPaths dubImportPaths(Configuration config = Configuration("default"))() {
-        import reggae.config: configToDubInfo;
-        return ImportPaths(configToDubInfo[config.value].allImportPaths);
+        return link(ExeName(name), allObjs, const Flags(allLinkerFlags));
     }
 
     /**
        Link a target taking into account the dub linker flags
      */
-    Target dubLink(TargetName targetName,
+    Target dubLink(imported!"reggae.types".TargetName targetName,
                    Configuration config = Configuration("default"),
                    alias objsFunction = () { Target[] t; return t; },
-                   LinkerFlags linkerFlags = LinkerFlags()
+                   imported!"reggae.types".LinkerFlags linkerFlags = imported!"reggae.types".LinkerFlags()
         )
         ()
     {
         import reggae.config: configToDubInfo;
+        import reggae.rules.common: link;
+        import reggae.types: ExeName, Flags;
+
         return link!(
             ExeName(targetName.value),
             objsFunction,
@@ -349,52 +195,29 @@ static if(imported!"reggae.config".isDubProject) {
         );
     }
 
-
-    private Target[] objs(in imported!"reggae.options".Options options,
-                          in TargetName targetName,
-                          in DubInfo dubInfo,
-                          in string[] compilerFlags,
-                          in CompilationMode compilationMode,
-                          Target[] extraObjects = [],
-                          in size_t startingIndex = 0)
-    {
-
-
-        auto dubObjs = dubInfo.toTargets(
-            compilerFlags,
-            compilationMode,
-            dubObjsDir(options, targetName, dubInfo),
-            startingIndex
-        );
-        auto allObjs = dubObjs ~ extraObjects;
-
-        return allObjs;
-    }
-
-    private string realName(in TargetName targetName, in DubInfo dubInfo) {
-
-        import std.path: buildPath;
-
-        const path = targetName.value;
-
-        // otherwise the target wouldn't be top-level in the presence of
-        // postBuildCommands
-        auto ret = dubInfo.postBuildCommands == ""
-            ? path
-            : buildPath("$builddir", path);
-
-        return ret == "" ? "placeholder" : ret;
-    }
-
-    private auto dubObjsDir(in imported!"reggae.options".Options options,
-                            in TargetName targetName,
-                            in DubInfo dubInfo)
+    private auto dubObjsDir(
+        in imported!"reggae.options".Options options,
+        in imported!"reggae.dub.info".DubInfo dubInfo)
+        @safe pure
     {
         import reggae.dub.info: DubObjsDir;
 
         return DubObjsDir(
             options.dubObjsDir,
-            realName(targetName, dubInfo) ~ ".objs"
+            dubInfo.targetName.value ~ ".objs",
         );
+    }
+
+    // fixes postBuildCommands, somehow
+    private string fixNameForPostBuild(in string targetName, in imported!"reggae.dub.info".DubInfo dubInfo) @safe pure {
+
+        import std.path: buildPath;
+
+        // otherwise the target wouldn't be top-level in the presence of
+        // postBuildCommands
+        const ret = dubInfo.postBuildCommands == ""
+            ? targetName
+            : buildPath("$builddir", targetName);
+        return ret == "" ? "placeholder" : ret;
     }
 }

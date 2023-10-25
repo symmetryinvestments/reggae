@@ -7,6 +7,8 @@ module reggae.dub.interop.dublib;
 import reggae.from;
 import dub.generators.generator: ProjectGenerator;
 
+// to avoid using it in the wrong way
+package:
 
 // Not shared because, for unknown reasons, dub registers compilers
 // in thread-local storage so we register the compilers in all
@@ -39,11 +41,14 @@ struct Dub {
 
     private Project _project;
     private const string[] _extraDFlags;
+    private const(Options) _options;
 
     this(in Options options) @safe {
         import reggae.path: buildPath;
         import std.exception: enforce;
         import std.file: exists;
+
+        _options = options;
 
         const path = buildPath(options.projectPath, "dub.selections.json");
         enforce(path.exists, "Cannot create dub instance without dub.selections.json");
@@ -52,12 +57,16 @@ struct Dub {
         _extraDFlags = options.dflags.dup;
     }
 
+    const(Options) options() @safe @nogc pure nothrow const return scope {
+        return _options;
+    }
+
     auto getPackage(in string dubPackage, in string version_) @trusted /*dub*/ {
         import dub.dependency: Version;
         return _project.packageManager.getPackage(dubPackage, Version(version_));
     }
 
-    static auto getGeneratorSettings(in Options options) {
+    private static auto getGeneratorSettings(in Options options) {
         import dub.compilers.compiler: getCompiler;
         import dub.generators.generator: GeneratorSettings;
         import dub.internal.vibecompat.inet.path: NativePath;
@@ -78,57 +87,80 @@ struct Dub {
         return ret;
     }
 
-    DubConfigurations getConfigs
-    (in from!"dub.generators.generator".GeneratorSettings settings, in string singleConfig = null)
-    {
-        import std.algorithm.iteration: filter, map;
+    DubConfigurations getConfigs() {
+        import std.algorithm: filter, map, canFind;
         import std.array: array;
+        import std.conv: text;
 
+        auto singleConfig = _options.dubConfig;
+        auto settings = getGeneratorSettings(_options);
         const allConfigs = singleConfig == "";
-
         // add the special `dub test` configuration (which doesn't require an existing `unittest` config)
-        const testConfig = (allConfigs || singleConfig == "unittest")
+        const lookingForUnitTestsConfig = allConfigs || singleConfig == "unittest";
+        const testConfig = lookingForUnitTestsConfig
             ? _project.addTestRunnerConfiguration(settings)
             : null; // skip when requesting a single non-unittest config
-        const haveSpecialTestConfig = testConfig.length && testConfig != "unittest";
 
-        if (!allConfigs) {
-            // translate `unittest` to the actual test configuration
-            const config = haveSpecialTestConfig ? testConfig : singleConfig;
-            return DubConfigurations([config], config, testConfig);
+        // error out if the test config is explicitly requested but not available
+        if(_options.dubConfig == "unittest" && testConfig == "") {
+            throw new Exception("No dub test configuration available (target type 'none'?)");
         }
+
+        const haveSpecialTestConfig = testConfig.length && testConfig != "unittest";
+        const defaultConfig = _project.getDefaultConfiguration(settings.platform);
 
         // A violation of the Law of Demeter caused by a dub bug.
         // Otherwise _project.configurations would do, but it fails for one
         // projet and no reduced test case was found.
-        auto configurations = _project
+        auto allConfigurationsAsStrings =
+            _project
             .rootPackage
             .recipe
             .configurations
             .filter!(c => c.matchesPlatform(settings.platform))
             .map!(c => c.name)
+            ;
+
+        if (!allConfigs) { // i.e. one single config specified by the user
+            // translate `unittest` to the actual test configuration
+            const requestedConfig = haveSpecialTestConfig ? testConfig : singleConfig;
+
+
+            const canFindConfig = allConfigurationsAsStrings.save.canFind(requestedConfig);
+            if (!canFindConfig && requestedConfig != "default")
+                throw new Exception(
+                    text("Unknown dub configuration `", requestedConfig, "` - known configurations:\n    ",
+                         allConfigurationsAsStrings.save)
+                );
+            // if the user requests "default", then give them the
+            // first available configuration, whether or not it's
+            // actually called "default".
+            assert(canFindConfig || requestedConfig == "default");
+            const actualConfig = canFindConfig
+                ? requestedConfig
+                : defaultConfig;
+
+            return DubConfigurations([actualConfig], actualConfig, testConfig);
+        }
+
+        // A violation of the Law of Demeter caused by a dub bug.
+        // Otherwise _project.configurations would do, but it fails for one
+        // projet and no reduced test case was found.
+        auto configurations = allConfigurationsAsStrings
+            .save
             // exclude unittest config if there's a derived special one
             .filter!(n => !haveSpecialTestConfig || n != "unittest")
             .array;
 
-        const defaultConfig = _project.getDefaultConfiguration(settings.platform);
         return DubConfigurations(configurations, defaultConfig, testConfig);
     }
 
-    DubInfo configToDubInfo
-    (from!"dub.generators.generator".GeneratorSettings settings,
-     in string config,
-     in imported!"reggae.options".Options options)
-        @trusted  // dub
-    {
+    DubInfo configToDubInfo(in string config = "") @trusted /*dub*/ {
         auto generator = new InfoGenerator(_project, _extraDFlags);
+        auto settings = getGeneratorSettings(_options);
         settings.config = config;
         generator.generate(settings);
-        return DubInfo(generator.dubPackages, options.dup);
-    }
-
-    void reinit() @trusted {
-        _project.reinit;
+        return DubInfo(generator.dubPackages, _options.dup);
     }
 }
 

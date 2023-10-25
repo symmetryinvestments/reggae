@@ -12,7 +12,6 @@ import reggae.build;
 import reggae.options;
 import reggae.types;
 import reggae.backend;
-import reggae.reflect;
 import reggae.path: buildPath;
 
 import std.stdio;
@@ -49,20 +48,27 @@ mixin template BuildGenMain(string buildModule = "reggaefile") {
 
 void doBuildFor(alias module_ = "reggaefile")(in Options options, string[] args = []) {
     auto build = getBuildObject!module_(options);
-    if(!options.noCompilationDB) writeCompilationDB(build, options);
     doBuild(build, options, args);
+}
+
+Build getBuildObject(alias module_)(in Options options) {
+    alias buildFunc = getBuildFunc!module_;
+    static if(is(buildFunc == void))
+        throw new Exception("No `Build reggaeBuild()` function in " ~ module_);
+    else
+        return getBuildObjectImpl!module_(options);
 }
 
 // calls the build function or loads it from the cache and returns
 // the Build object
-Build getBuildObject(alias module_)(in Options options) {
+private Build getBuildObjectImpl(alias module_)(in Options options) {
     import std.file;
 
     immutable cacheFileName = buildPath(".reggae", "cache");
     if(!options.cacheBuildInfo ||
        !cacheFileName.exists ||
         thisExePath.timeLastModified > cacheFileName.timeLastModified) {
-        const buildFunc = getBuild!(module_); //get the function to call by CT reflection
+        alias buildFunc = getBuildFunc!module_;
         auto build = buildFunc(); //actually call the function to get the build description
 
         if(options.cacheBuildInfo) {
@@ -78,8 +84,22 @@ Build getBuildObject(alias module_)(in Options options) {
     }
 }
 
+private template getBuildFunc(alias module_) {
+    static if(is(typeof(module_) == string)) {
+        mixin(`static import `, module_, `;`);
+        alias getBuildFunc = getBuildFunc!(mixin(module_));
+    } else { // it's a module, not a string
+        static if(__traits(hasMember, module_, "reggaeBuild"))
+            alias getBuildFunc = module_.reggaeBuild;
+        else
+            alias getBuildFunc = void;
+    }
+
+}
+
 // Exports / does the build (binary backend) / produces the build file(s) (make, ninja, tup)
 void doBuild(Build build, in Options options, string[] args = []) {
+    if(!options.noCompilationDB) writeCompilationDB(build, options);
     options.export_ ? exportBuild(build, options) : doOneBuild(build, options, args);
 }
 
@@ -132,7 +152,7 @@ private void exportBuild(Build build, in Options options) {
 }
 
 
-void writeCompilationDB(Build build, in Options options) {
+private void writeCompilationDB(Build build, in Options options) {
     import std.file;
     import std.conv;
     import std.algorithm;

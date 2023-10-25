@@ -111,25 +111,18 @@ private bool dubBuild(in Options options) {
 }
 
 private bool runtimeBuild(in Options options, imported!"reggae.build".Build build) {
-    import reggae.buildgen: doBuild;
     import reggae.types: Backend;
-    import std.algorithm: among;
 
     enforce(options.backend != Backend.binary, "Binary backend not supported at runtime");
 
     version(minimal)
-        assert(0, "JSON builds not supported in minimal version");
+        assert(0, "Runtime builds not supported in minimal version");
     else {
-        import reggae.buildgen;
-        import reggae.rules.common: Language;
+        import reggae.buildgen: doBuild;
 
         if(build == build.init) return false;
 
         doBuild(build, options);
-
-        import reggae.buildgen:writeCompilationDB;
-        if(!options.noCompilationDB) writeCompilationDB(build, options);
-
     }
 
     return true;
@@ -206,7 +199,7 @@ private enum coreFiles = [
     "buildgen_main.d", "buildgen.d",
     "build.d",
     "backend/package.d", "backend/binary.d",
-    "package.d", "range.d", "reflect.d",
+    "package.d", "range.d",
     "dependencies.d", "types.d",
     "ctaa.d", "sorting.d", "file.d",
     "rules/package.d",
@@ -354,17 +347,25 @@ private const(string)[] getCompileBuildGenCmd(in Options options) @safe {
         // ~ ["-g", "--d-debug"] // ldc
         ;
     const commonAfter = buildBinFlags ~ options.reggaeFilePath ~ reggaeSrcs;
-    version(minimal) return commonBefore ~ "-version=minimal" ~ commonAfter;
-    else return commonBefore ~ commonAfter;
+    version(minimal)
+        return commonBefore ~ "-version=minimal" ~ commonAfter;
+    else
+        return commonBefore ~ commonAfter;
 }
 
 private string[] importPaths(in Options options) @safe nothrow {
-    import std.file;
+    import std.file: exists;
+    import std.algorithm: map;
+    import std.array: array;
+    import std.range: chain, only;
 
-    immutable srcDir = "-I" ~ buildPath("src");
+    auto imports = chain(only("src"), options.reggaefileImportPaths)
+        .map!(p => "-I" ~ p)
+        .array;
+    auto projPathImport = "-I" ~ options.projectPath;
     // if compiling phobos, the includes for the reggaefile.d compilation
     // will pick up the new phobos if we include the src path
-    return "std".exists ? [srcDir] : ["-I" ~ options.projectPath, srcDir];
+    return "std".exists ? imports : projPathImport ~ imports;
 }
 
 private string getBuildGenName(in Options options) @safe pure nothrow {

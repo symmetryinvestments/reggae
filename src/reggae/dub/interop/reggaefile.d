@@ -23,11 +23,11 @@ auto defaultDubBuild(in from!"reggae.options".Options options) {
         : reducedDubBuild(options, configToDubInfo);
 }
 
-auto standardDubBuild(in from!"reggae.options".Options options, in ConfigToDubInfo configToDubInfo) {
+private auto standardDubBuild(in from!"reggae.options".Options options, in ConfigToDubInfo configToDubInfo) {
     import reggae.build: Build, Target, optional;
-    import reggae.rules.dub: dubDefaultTarget, dubTestTarget;
+    import reggae.rules.dub: dubTarget, dubTestTarget;
 
-    auto buildTarget = dubDefaultTarget(options, configToDubInfo); // dub build
+    auto buildTarget = dubTarget(options, configToDubInfo); // dub build
     auto testTarget = dubTestTarget(options, configToDubInfo);     // dub test
 
     Target aliasTarget(string aliasName, alias target)() {
@@ -56,11 +56,11 @@ auto standardDubBuild(in from!"reggae.options".Options options, in ConfigToDubIn
     return Build(buildTarget, optional(testTarget), optional(defaultTarget), optional(utTarget));
 }
 
-auto reducedDubBuild(in from!"reggae.options".Options options, in ConfigToDubInfo configToDubInfo) {
+private auto reducedDubBuild(in from!"reggae.options".Options options, in ConfigToDubInfo configToDubInfo) {
     import reggae.build: Build, Target, optional;
-    import reggae.rules.dub: dubDefaultTarget;
+    import reggae.rules.dub: dubTarget;
 
-    auto buildTarget = dubDefaultTarget(options, configToDubInfo); // dub build
+    auto buildTarget = dubTarget(options, configToDubInfo); // dub build
 
     Target aliasTarget(string aliasName, alias target)() {
         import std.algorithm: map;

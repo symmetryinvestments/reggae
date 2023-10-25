@@ -6,24 +6,25 @@ import reggae.from;
 
 package void dubFetch(O)(
     auto ref O output,
-    ref from!"reggae.dub.interop.dublib".Dub dub,
     in from!"reggae.options".Options options,
     in string dubSelectionsJson)
     @trusted
 {
+    static import reggae.dub.interop.dublib;
     import reggae.io: log;
     import dub.dub: Dub, FetchOptions;
     import dub.dependency: Version;
     import dub.packagemanager: PlacementLocation;
     import std.array: replace;
     import std.json: parseJSON, JSONType;
-    import std.file: readText, getcwd;
+    import std.file: readText;
     import std.parallelism: parallel;
 
     const(VersionedPackage)[] pkgsToFetch;
 
     const json = parseJSON(readText(dubSelectionsJson));
 
+    auto dublib = reggae.dub.interop.dublib.Dub(options);
     foreach(dubPackageName, versionJson; json["versions"].object) {
 
         // skip the ones with a defined path
@@ -32,12 +33,11 @@ package void dubFetch(O)(
         const version_ = versionJson.str.replace("==", "");
         const pkg = VersionedPackage(dubPackageName, version_);
 
-        if(needDubFetch(dub, pkg)) pkgsToFetch ~= pkg;
+        if(needDubFetch(dublib, pkg)) pkgsToFetch ~= pkg;
     }
 
     output.log("Creating dub object");
-    auto dubObj = new Dub(getcwd());
-
+    auto dubObj = new Dub(dublib.options.projectPath);
 
     output.log("Fetching dub packages");
     foreach(pkg; pkgsToFetch.parallel) {
@@ -57,8 +57,6 @@ package void dubFetch(O)(
         }
     }
     output.log("Fetched dub packages");
-
-    dub.reinit;
 }
 
 

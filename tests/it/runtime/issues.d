@@ -336,3 +336,91 @@ version(Posix) {
         }
     }
 }
+
+@("210")
+@Tags("issues", "ninja")
+unittest {
+    with (immutable ReggaeSandbox()) {
+        // we write to something containing "core" since the directory
+        // name must include that to reproduce the bug
+        writeFile(
+            "no123core/dub.sdl",
+            [
+                `name "oops"`,
+                `targetType "library"`,
+            ]
+        );
+        // the reggaefile must exist since the bug had to do with
+        // getting dependencies for it
+        writeFile(
+            "no123core/reggaefile.d",
+            [
+                `import reggae;`,
+                `mixin build!(dubDefaultTarget!());`
+            ]
+        );
+        writeFile("no123core/src/no123core/oops.d", "module no123core.oops;");
+        runReggae("-b", "ninja", inSandboxPath("no123core"));
+    }
+}
+
+@("dubConfig.implicit.default")
+@Tags("dub", "issues", "ninja")
+unittest {
+    with (immutable ReggaeSandbox()) {
+        // no *explicit* default configuration, should still work
+        writeFile("dub.sdl", `name "oops"`);
+        writeFile("source/oops.d", "void oops() {}");
+        runReggae("-b", "ninja", "--dub-config=default");
+    }
+}
+
+@("dubConfig.explicit.wrong")
+@Tags("dub", "issues", "ninja")
+unittest {
+    with (immutable ReggaeSandbox()) {
+        // no *explicit* default configuration, should still work
+        writeFile("dub.sdl", `name "oops"`);
+        writeFile("source/oops.d", "void oops() {}");
+        runReggae("-b", "ninja", "--dub-config=ohnoes")
+            .shouldThrowWithMessage(
+                "Unknown dub configuration `ohnoes` - known configurations:\n    [\"library\"]");
+    }
+}
+
+@("compdb.no")
+unittest {
+    with(immutable ReggaeSandbox()) {
+        writeFile(
+            "reggaefile.d",
+            q{
+                import reggae;
+                alias exe = executable!(ExeName("app"), Sources!("src"));
+                mixin build!exe;
+            }
+        );
+        writeFile("src/app.d", q{void main() {}});
+        shouldNotExist("compile_commands.json");
+        runReggae("--no-comp-db");
+        shouldNotExist("compile_commands.json");
+    }
+}
+
+
+@("compdb.yes")
+unittest {
+    with(immutable ReggaeSandbox()) {
+        writeFile(
+            "reggaefile.d",
+            q{
+                import reggae;
+                alias exe = executable!(ExeName("app"), Sources!("src"));
+                mixin build!exe;
+            }
+        );
+        writeFile("src/app.d", q{void main() {}});
+        shouldNotExist("compile_commands.json");
+        runReggae;
+        shouldExist("compile_commands.json");
+    }
+}

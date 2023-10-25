@@ -3,7 +3,6 @@
  to be expressed in. $(D Build) is a container struct for top-level
  targets, $(D Target) is the heart of the system.
  */
-
 module reggae.build;
 
 import reggae.ctaa;
@@ -29,8 +28,9 @@ import std.typecons;
  */
 struct Build {
     static struct TopLevelTarget {
+        import std.typecons: Flag;
         Target target;
-        bool optional;
+        Flag!"optional" optional;
     }
 
     private TopLevelTarget[] _targets;
@@ -84,10 +84,12 @@ struct Build {
     }
 
     static Build fromBytes(ubyte[] bytes) @trusted {
+        import std.typecons: No;
+
         immutable length = getUshort(bytes);
         auto build = Build();
         foreach(_; 0 .. length) {
-            build._targets ~= TopLevelTarget(Target.fromBytes(bytes), false);
+            build._targets ~= TopLevelTarget(Target.fromBytes(bytes), No.optional);
         }
         return build;
     }
@@ -106,10 +108,14 @@ Build.TopLevelTarget optional(alias targetFunc)() {
  Designate a target as optional so it won't be built by default.
  */
 Build.TopLevelTarget optional(Target target) {
-    return createTopLevelTarget(target, true);
+    import std.typecons: Yes;
+    return createTopLevelTarget(target, Yes.optional);
 }
 
-Build.TopLevelTarget createTopLevelTarget(Target target, bool optional = false) {
+Build.TopLevelTarget createTopLevelTarget(
+    Target target,
+    imported!"std.typecons".Flag!"optional" optional = imported!"std.typecons".No.optional)
+{
     return Build.TopLevelTarget(target.inTopLevelObjDirOf(objDirOf(target), Yes.topLevel), optional);
 }
 
@@ -172,12 +178,6 @@ unittest {
     static assert(isTarget!t3);
 }
 
-mixin template buildImpl(targets...) if(allSatisfy!(isTarget, targets)) {
-    Build buildFunc() {
-        return Build(targets);
-    }
-}
-
 /**
  Two variations on a template mixin. When reggae is used as a library,
  this will essentially build reggae itself as part of the build description.
@@ -198,21 +198,11 @@ version(reggaelib) {
     alias build = buildImpl;
 }
 
-package template isBuildFunction(alias T) {
-    static if(!isSomeFunction!T) {
-        enum isBuildFunction = false;
-    } else {
-        enum isBuildFunction = is(ReturnType!T == Build) && arity!T == 0;
+mixin template buildImpl(targets...) if(allSatisfy!(isTarget, targets)) {
+    Build reggaeBuild() {
+        return Build(targets);
     }
 }
-
-unittest {
-    Build myBuildFunction() { return Build(); }
-    static assert(isBuildFunction!myBuildFunction);
-    float foo;
-    static assert(!isBuildFunction!foo);
-}
-
 
 private static auto arrayify(E, T)(T value) {
     import std.array: array;
