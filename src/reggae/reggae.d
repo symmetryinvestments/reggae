@@ -430,8 +430,8 @@ private string[] dubImportFlags(in imported!"reggae.options".Options options) {
     import std.path: buildPath;
     import reggae.path: dubPackagesDir;
 
-    const dubSelectionsJson = import("dub.selections.json");
-    const dubVersion = dubSelectionsJson
+    enum dubSelectionsJson = import("dub.selections.json");
+    enum dubVersion = dubSelectionsJson
         .parseJSON
         ["versions"]
         ["dub"]
