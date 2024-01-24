@@ -167,6 +167,7 @@ struct Options {
 
         return parseDepFile(reggaeFileDepFile)
             .filter!(a => !a.canFind(dirSeparator ~ buildPath("dub", "source")))
+            .filter!(a => !a.canFind(dirSeparator ~ buildPath("reggae", "source")))
             .array;
     }
 
@@ -356,7 +357,7 @@ Options getOptions(Options defaultOptions, string[] args) @trusted {
 }
 
 
-immutable hiddenDir = ".reggae";
+enum hiddenDir = ".reggae";
 
 
 Options withProjectPath(in Options options, in string projectPath) @safe pure nothrow {

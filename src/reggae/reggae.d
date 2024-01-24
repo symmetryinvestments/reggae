@@ -28,13 +28,6 @@ import reggae.file;
 import reggae.path: buildPath;
 
 
-version(minimal) {
-    //empty stubs for minimal version of reggae
-    void writeDubConfig(T...)(T) {}
-} else {
-    import reggae.dub.interop: writeDubConfig;
-}
-
 mixin template reggaeGen(targets...) {
     mixin buildImpl!targets;
     mixin ReggaeMain;
@@ -73,6 +66,9 @@ void run(T)(auto ref T output, Options options) {
     // write out the library source files to be compiled/interpreted
     // with the user's build description
     writeSrcFiles(output, options);
+
+    // Write out the config.d file
+    writeConfig(output, options);
 
     if(options.isJsonBuild) {
         immutable haveToReturn = jsonBuild(options);
@@ -130,7 +126,7 @@ private string getJsonOutput(in Options options) @safe {
     const pythonPaths = environment.get("PYTHONPATH", "").split(":");
     const nodePaths = environment.get("NODE_PATH", "").split(":");
     const luaPaths = environment.get("LUA_PATH", "").split(";");
-    const srcDir = buildPath(hiddenDirAbsPath(options), "src");
+    const srcDir = reggaeSrcDirName(options);
     const binDir = buildPath(srcDir, "reggae");
     auto env = ["PATH": (path ~ binDir).join(":"),
                 "PYTHONPATH": (pythonPaths ~ srcDir).join(":"),
@@ -179,64 +175,16 @@ private string[] getJsonOutputArgs(in Options options) @safe {
     case BuildLanguage.Ruby:
         return ["ruby", "-S",
                 "-I" ~ options.projectPath,
-                "-I" ~ buildPath(hiddenDirAbsPath(options), "src/reggae"),
+                "-I" ~ reggaePkgDirName(options),
                 "reggae_json_build.rb"];
 
     case BuildLanguage.Lua:
-        return ["lua", buildPath(hiddenDirAbsPath(options), "src/reggae/reggae_json_build.lua")];
+        return ["lua", reggaeSrcFileName(options, "reggae_json_build.lua")];
 
     case BuildLanguage.JavaScript:
-        return ["node", buildPath(hiddenDirAbsPath(options), "src/reggae/reggae_json_build.js")];
+        return ["node", reggaeSrcFileName(options, "reggae_json_build.js")];
     }
 }
-
-private enum coreFiles = [
-    "options.d",
-    "buildgen_main.d", "buildgen.d",
-    "build.d",
-    "backend/package.d", "backend/binary.d",
-    "package.d", "range.d",
-    "dependencies.d", "types.d",
-    "ctaa.d", "sorting.d", "file.d",
-    "rules/package.d",
-    "rules/common.d",
-    "rules/d.d",
-    "rules/c_and_cpp.d",
-    "core/package.d", "core/rules/package.d",
-    ];
-private enum otherFiles = [
-    "backend/ninja.d", "backend/make.d", "backend/tup.d",
-    "dub/interop/configurations.d",
-    "dub/interop/dublib.d",
-    "dub/interop/exec.d",
-    "dub/interop/fetch.d",
-    "dub/interop/package.d",
-    "dub/interop/default_build.d",
-    "dub/info.d",
-    "rules/dub/package.d", "rules/dub/runtime.d", "rules/dub/compile.d", "rules/dub/external.d",
-    "path.d",
-    "io.d",
-    ];
-
-version(minimal) {
-    private enum string[] foreignFiles = [];
-} else {
-    private enum foreignFiles = [
-        "__init__.py", "build.py", "reflect.py", "rules.py", "reggae_json_build.py",
-        "reggae.rb", "reggae_json_build.rb",
-        "reggae-js.js", "reggae_json_build.js",
-        "JSON.lua", "reggae.lua", "reggae_json_build.lua",
-        ];
-}
-
-//all files that need to be written out and compiled
-private string[] fileNames() @safe pure nothrow {
-    version(minimal)
-        return coreFiles;
-    else
-        return coreFiles ~ otherFiles;
-}
-
 
 private void createBuild(T)(auto ref T output, in Options options) {
 
@@ -271,15 +219,6 @@ struct Binary {
 }
 
 
-private enum dubSdl =
-`
-    name "buildgen"
-    targetType "executable"
-    sourceFiles %s // user files (reggaefile.d + dependencies)
-    importPaths %s // to pick up potential reggaefile.d dependencies
-    dependency "dub" version="*" // version fixed by dub.selections.json
-`;
-
 private string compileBuildGenerator(T)(auto ref T output, in Options options) {
 
     import std.algorithm: any, canFind;
@@ -305,36 +244,48 @@ private string compileBuildGenerator(T)(auto ref T output, in Options options) {
     return buildGenName;
 }
 
+private enum reggaeFileDubSdl =
+`
+name "buildgen"
+targetType "executable"
+ // user files (reggaefile.d, buildgen_main.d, dependencies imported by the reggaefile)
+sourceFiles %s
+ // to pick up potential reggaefile.d dependencies
+importPaths %s
+dependency "reggae" path="packages/reggae"
+dependency "dub" version="*" // version fixed by dub.selections.json
+`;
+
+private enum libReggaeDubSdl =
+`
+name "reggae"
+targetType "staticLibrary"
+dependency "dub" version="*" // version fixed by dub.selections.json
+`;
+
+private enum reggaeFileDubSelectionsJson =
+`
+{
+        "fileVersion": 1,
+        "versions": {
+                "dub": %s,
+                "reggae": {"path":"packages/reggae"},
+                "unit-threaded": %s
+        }
+}
+`;
+
+
 // dub support is needed at runtime, build and link with dub-as-a-library
 private Binary buildReggaefileDub(O)(auto ref O output, in Options options) {
-
-    import reggae.rules.common: objExt;
     import std.format: format;
-    import std.file: write;
     import std.path: buildPath;
     import std.algorithm: map, joiner;
     import std.range: chain, only;
-    import std.string: replace;
-    import std.array: array;
+    import std.array: replace;
 
-    immutable buildGenName = getBuildGenName(options);
-
-    // `options.getReggaeFileDependenciesDlang` depends on
-    // `options.reggaeFileDepFile` existing, which means we need to
-    // compile the reggaefile separately to get those dependencies
-    // *then* add any extra files to the dummy dub.sdl.
-    const dubVersions = ["Have_dub", "DubUseCurl"];
-    const versionFlag = options.isLdc ? "-d-version" : "-version";
-    const dubVersionFlags = dubVersions.map!(a => versionFlag ~ "=" ~ a).array;
-    auto reggaefileObj = Binary(
-        "reggaefile" ~ objExt,
-        [
-            options.dCompiler,
-            options.reggaeFilePath, "-o-", "-makedeps=" ~ options.reggaeFileDepFile,
-         ]
-        ~ dubVersionFlags ~ importPaths(options) ~ dubImportFlags(options),
-    );
-    buildBinary(output, options, reggaefileObj);
+     // calculates .dep so getReggaeFileDependenciesDlang works below
+    calculateReggaeFileDeps(output, options);
 
     // quote and separate with spaces for .sdl
     static stringsToSdlList(R)(R strings) {
@@ -345,35 +296,124 @@ private Binary buildReggaefileDub(O)(auto ref O output, in Options options) {
     }
 
     auto userFiles = chain(
+        buildGenMainSrcPath(options).only,
         options.reggaeFilePath.only,
-        options.getReggaeFileDependenciesDlang
+        options.getReggaeFileDependenciesDlang // must be called after .dep file created
     );
     auto userSourceFilesForDubSdl = stringsToSdlList(userFiles);
     // [2..$] gets rid of `-I`
     auto importPathsForDubSdl = stringsToSdlList(importPaths(options).map!(i => i[2..$]));
 
+    // write these first so that trying to get import paths for dub
+    // and its transitive dependencies works in `dubImportPaths`
+    // below.
     const dubRecipeDir = hiddenDirAbsPath(options);
     const dubRecipePath = buildPath(dubRecipeDir, "dub.sdl");
-    write(
+
+    writeIfDiffers(
+        output,
         dubRecipePath,
-        dubSdl.format(
+        reggaeFileDubSdl.format(
             userSourceFilesForDubSdl,
             importPathsForDubSdl,
         ),
     );
-    write(
-        buildPath(hiddenDirAbsPath(options), "dub.selections.json"),
-        import("dub.selections.json")
+
+    writeIfDiffers(
+        output,
+        buildPath(dubRecipeDir, "dub.selections.json"),
+        reggaeFileDubSelectionsJson.format(selectionsPkgVersion!"dub", selectionsPkgVersion!"unit-threaded"),
+    );
+
+    const reggaeRecipePath = buildPath(reggaeSrcDirName(options), "..", "dub.sdl");
+    writeIfDiffers(
+        output,
+        reggaeRecipePath,
+        libReggaeDubSdl,
     );
 
     // FIXME - use --compiler
     // The reason it doesn't work now is due to a test using
     // a custom compiler
     return Binary(
-        buildGenName,
-        ["dub", "build"], // since we now depend on dub at buildgen runtime
+        getBuildGenName(options),
+        ["dub", "build", "--nodeps", "--skip-registry=all"], // since we now depend on dub at buildgen runtime
     );
 }
+
+// create a .dep file with the dependencies of the reggaefile so we
+// can compile them
+private void calculateReggaeFileDeps(O)(auto ref O output, in Options options) {
+    import reggae.io: log;
+    import reggae.build: Target, Command;
+
+    // `options.getReggaeFileDependenciesDlang` depends on
+    // `options.reggaeFileDepFile` existing, which means we need to
+    // compile the reggaefile separately to get those dependencies
+    // *then* add any extra files to the dummy dub.sdl.
+    // *Must* be done before attempting
+    // options.getReggaeFileDependenciesDlang.
+    auto target = Target(
+        options.reggaeFileDepFile,
+        Command(
+            (in string[] inputs, in string[] outputs) {
+                auto reggaefileObj = Binary(
+                    "_", // dummy name that doesn't matter
+                    [
+                        options.dCompiler,
+                        options.reggaeFilePath, "-o-", "-makedeps=" ~ options.reggaeFileDepFile,
+                        ]
+                    ~ importPaths(options),
+                );
+
+                output.log("Calculating reggaefile dependencies");
+                buildBinary(output, options, reggaefileObj);
+            }
+        ),
+        options.reggaeFilePath,
+    );
+
+    buildTarget(options, target); // run the command
+}
+
+// build a target using reggae as a build system
+private void buildTarget(in Options options, imported!"reggae.build".Target target) {
+    import reggae.types: Backend;
+    import reggae.build: Build;
+
+    auto newOptions = options.dup;
+    newOptions.backend = Backend.binary;
+    runtimeBuild(newOptions, Build(target));
+}
+
+private void writeIfDiffers(O)(auto ref O output, in string path, in string contents) @safe {
+    import reggae.io: log;
+    import std.file: exists, readText, write, mkdirRecurse;
+    import std.array: replace;
+    import std.path: dirName;
+
+    if(!path.exists || path.readText.replace("\r\n", "\n") != contents) {
+        output.log("Writing ", path);
+        if(!path.dirName.exists)
+            mkdirRecurse(path.dirName);
+        write(path, contents);
+    }
+}
+
+
+// the dub/unit-threaded version we depend on
+private imported!"std.json".JSONValue selectionsPkgVersion(string pkg)() @safe pure {
+    import std.json: parseJSON;
+
+    // enforce CTFE, checking the JSON at compile-time
+    enum selection = import("dub.selections.json")
+        .parseJSON
+        ["versions"]
+        [pkg];
+
+    return selection;
+}
+
 
 
 // no dub support needed at runtime, build by calling the compiler directly
@@ -387,8 +427,7 @@ private Binary buildReggaefileNoDub(in imported!"reggae.options".Options options
     return Binary(
         buildGenName,
         [options.dCompiler, "-of" ~ buildGenName, "-i", options.reggaeFilePath, "-makedeps=" ~ options.reggaeFileDepFile,]
-        ~ importPaths(options)
-        ~ buildPath(hiddenDirAbsPath(options), "src", "reggae", "buildgen_main.d"),
+        ~ importPaths(options) ~ buildGenMainSrcPath(options),
     );
 }
 
@@ -422,30 +461,6 @@ private string buildReggaefileWithReggae(in imported!"reggae.options".Options op
     return getBuildGenName(options);
 }
 
-private string[] dubImportFlags(in imported!"reggae.options".Options options) {
-    import std.json: parseJSON;
-    import dub.dub: Dub, FetchOptions;
-    import dub.dependency: Version;
-    import std.file: exists;
-    import std.path: buildPath;
-    import reggae.path: dubPackagesDir;
-
-    version(all) {
-        enum dubVersion = "1.35.0";
-    } else {
-        enum dubSelectionsJson = import("dub.selections.json");
-        enum dubVersion = dubSelectionsJson
-            .parseJSON
-            ["versions"]
-            ["dub"]
-            .str;
-    }
-    auto dubObj = new Dub(options.projectPath);
-    dubObj.fetch("dub", Version(dubVersion), dubObj.defaultPlacementLocation, FetchOptions.none);
-    const dubSourcePath = buildPath(dubPackagesDir, "dub", dubVersion, "dub", "source");
-    assert(dubSourcePath.exists, "dub fetch failed: no path '" ~ dubSourcePath ~ "'");
-    return ["-I" ~ dubSourcePath];
-}
 
 private void buildBinary(T)(auto ref T output, in Options options, in Binary bin) {
     import reggae.io: log;
@@ -478,7 +493,7 @@ private string[] importPaths(in Options options) @safe nothrow {
     import std.range: chain, only;
     import std.path: buildPath;
 
-    auto imports = chain(only(buildPath(hiddenDirAbsPath(options), "src")), options.reggaefileImportPaths)
+    auto imports = chain(only(reggaeSrcDirName(options)), options.reggaefileImportPaths)
         .map!(p => "-I" ~ p)
         .array;
     auto projPathImport = "-I" ~ options.projectPath;
@@ -496,77 +511,173 @@ private string getBuildGenName(in Options options) @safe pure nothrow {
     return baseName ~ exeExt;
 }
 
+// On Windows we're apparently not allowed to have a main function in
+// a static library so we have to build the main function with the
+// reggaefile
+private enum buildGenMainSrc =
+q{
+    // args is empty except for the binary backend,
+    // in which case it's used for runtime options
+    int main(string[] args) {
+        try {
+            import reggae.config: options;
+            import reggae.buildgen: doBuildFor;
+            doBuildFor!("reggaefile")(options, args); //the user's build description
+            return 0;
+        } catch(Exception ex) {
+            import std.stdio: stderr;
+            stderr.writeln(ex.msg);
+            return 1;
+        }
+    }
+};
+
 private void writeSrcFiles(T)(auto ref T output, in Options options) {
     import reggae.io: log;
-    import std.file: mkdirRecurse, rmdirRecurse;
+    import std.file: mkdirRecurse, rmdirRecurse, exists;
+    import std.path: dirName;
+
+    writeIfDiffers(
+        output,
+        buildGenMainSrcPath(options),
+        buildGenMainSrc,
+    );
+
+    if(!haveToWriteSrcFiles(options))
+        return;
 
     output.log("Writing reggae source files");
 
-    immutable reggaeSrcDirName = reggaeSrcDirName(options);
+    immutable reggaePkgDirName = reggaePkgDirName(options);
 
     // FIXME: only write what's necessary, delete files that are no
     // longer needed.
-    if(reggaeSrcDirName.exists)
-        rmdirRecurse(reggaeSrcDirName);
+    if(reggaePkgDirName.exists)
+        rmdirRecurse(reggaePkgDirName);
 
-    foreach(path; ["dub/interop", "rules/dub", "backend", "core/rules"]) {
-        mkdirRecurse(buildPath(reggaeSrcDirName, path));
-    }
-
+    enum fileNames = mixin(import("payload.txt"));
     // this foreach has to happen at compile time due
     // to the string import below.
-    foreach(fileName; aliasSeqOf!(fileNames ~ foreignFiles)) {
-        auto file = File(reggaeSrcFileName(options, fileName), "w");
+    foreach(fileName; aliasSeqOf!fileNames) {
+        const filePath = reggaeSrcFileName(options, fileName);
+
+        if(!filePath.dirName.exists)
+            mkdirRecurse(filePath.dirName);
+
+        auto file = File(filePath, "w");
         file.write(import(fileName));
     }
-
-    writeConfig(output, options);
 }
 
-private string reggaeSrcDirName(in Options options) @safe pure nothrow {
-    import std.path: buildPath;
-    static immutable reggaeSrcRelDirName = buildPath("src/reggae");
-    return buildPath(hiddenDirAbsPath(options), reggaeSrcRelDirName);
+private bool haveToWriteSrcFiles(in Options options) {
+    import std.file: readText, dirEntries, SpanMode, exists;
+    import std.algorithm: map, filter, sort, endsWith;
+    import std.array: join, array, replace;
+    import std.meta: staticMap, aliasSeqOf;
+
+    immutable reggaePkgDirName = reggaePkgDirName(options);
+
+    if(!reggaePkgDirName.exists)
+        return true;
+
+    enum read(string fileName) = import(fileName);
+    enum fileNames = mixin(import("payload.txt"))
+        .filter!(a => !a.endsWith("config.d"))
+        .array
+        .sort
+        .array;
+    enum whatIHaves = staticMap!(read, aliasSeqOf!(fileNames));
+    enum whatIHave = [whatIHaves].join; // concat of all files
+
+    const whatsThere = dirEntries(reggaePkgDirName, SpanMode.breadth)
+        .filter!(de => !de.isDir)
+        .filter!(a => !a.name.endsWith("config.d"))
+        .array
+        .sort
+        .map!(de => readText(de.name).replace("\r\n", "\n"))
+        .join;
+
+    return whatIHave != whatsThere;
 }
 
 private void writeConfig(T)(auto ref T output, in Options options) {
 
     import reggae.io: log;
+    import std.file: readText;
+    import std.array: replace;
+
+    version(minimal) {
+        static void dubConfigSource(A...)(auto ref A args) { return ""; }
+    } else {
+        import reggae.dub.interop: dubConfigSource;
+    }
+
+    const reggaeSrc = reggaeConfigSource(options);
+    const dubSrc = dubConfigSource(output, options);
+    const src = reggaeSrc ~ dubSrc;
+    const fileName = reggaeSrcFileName(options, "config.d");
+
+    if(fileName.readText.replace("\r\n", "\n") == src)
+        return;
 
     output.log("Writing reggae configuration");
 
-    auto file = File(reggaeSrcFileName(options, "config.d"), "w");
+    auto file = File(fileName, "w");
+    file.write(src);
+}
 
-    file.writeln(q{
+// the text of the config.d file to be written
+private string reggaeConfigSource(in Options options) @safe {
+
+    string ret;
+
+    void append(A...)(auto ref A args) {
+        import std.conv: text;
+        ret ~= text(args, "\n");
+    }
+
+    append(q{
 module reggae.config;
 import reggae.ctaa;
 import reggae.types;
 import reggae.options;
     });
 
-    version(minimal) file.writeln("enum isDubProject = false;");
-    file.writeln("immutable options = ", options, ";");
+    version(minimal) append("enum isDubProject = false;");
+    append("immutable options = ", options, ";");
 
-    file.writeln("enum userVars = AssocList!(string, string)([");
+    append("enum userVars = AssocList!(string, string)([");
     foreach(key, value; options.userVars) {
-        file.writeln("assocEntry(`", key, "`, `", value, "`), ");
+        append("assocEntry(`", key, "`, `", value, "`), ");
     }
-    file.writeln("]);");
+    append("]);");
 
-    try {
-        writeDubConfig(output, options, file);
-    } catch(Exception ex) {
-        stderr.writeln("Could not write dub configuration: ", ex.msg);
-        throw ex;
-    }
+    return ret;
 }
 
-
 private string reggaeSrcFileName(in Options options, in string fileName) @safe pure nothrow {
-    return buildPath(reggaeSrcDirName(options), fileName);
+    import std.path: buildPath;
+    return buildPath(reggaePkgDirName(options), fileName);
+}
+
+private string reggaePkgDirName(in Options options) @safe pure nothrow {
+    import std.path: buildPath;
+    return buildPath(reggaeSrcDirName(options), "reggae");
+}
+
+private string reggaeSrcDirName(in Options options) @safe pure nothrow {
+    import std.path: buildPath;
+    return buildPath(hiddenDirAbsPath(options), "packages", "reggae", "source");
 }
 
 private string hiddenDirAbsPath(in Options options) @safe pure nothrow {
+    import reggae.options: hiddenDir;
     import std.path: buildPath;
+
     return buildPath(options.workingDir, hiddenDir);
+}
+
+private string buildGenMainSrcPath(in Options options) @safe pure nothrow {
+    import std.path: buildPath;
+    return buildPath(hiddenDirAbsPath(options), "buildgen_main.d");
 }

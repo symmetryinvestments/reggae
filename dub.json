@@ -10,8 +10,8 @@
     "importPaths": ["src", "payload"],
     "stringImportPaths": ["payload/reggae", "."],
     "sourcePaths": ["src", "payload"],
-    "excludedSourceFiles": ["payload/reggae/buildgen_main.d"],
     "mainSourceFile": "src/reggae/reggae_main.d",
+    "preGenerateCommands": ["rdmd $PACKAGE_DIR/list_payload.d $PACKAGE_DIR"],
     "dependencies": {
         "dub": "~>1.35.0"
     },
@@ -28,8 +28,7 @@
           "mainSourceFile": "tests/main.d",
           "versions": ["ReggaeTest"],
           "dflags-dmd": ["-check=invariant=off"],
-          "excludedSourceFiles": ["payload/reggae/buildgen_main.d",
-                                  "src/reggae/reggae_main.d",
+          "excludedSourceFiles": ["src/reggae/reggae_main.d",
                                   "tests/projects/project1/src/main.d",
                                   "tests/projects/project2/source/main.d",
                                   "tests/projects/d_and_cpp/src/main.d",

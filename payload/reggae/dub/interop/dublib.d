@@ -5,7 +5,7 @@ module reggae.dub.interop.dublib;
 
 version(Have_dub):
 // to avoid using it in the wrong way
-package:
+private:
 
 // Not shared because, for unknown reasons, dub registers compilers
 // in thread-local storage so we register the compilers in all
@@ -30,7 +30,7 @@ static this() nothrow {
 }
 
 
-struct Dub {
+package struct Dub {
     import reggae.dub.interop.configurations: DubConfigurations;
     import reggae.dub.info: DubInfo;
     import reggae.options: Options;
@@ -40,7 +40,7 @@ struct Dub {
     private const string[] _extraDFlags;
     private const(Options) _options;
 
-    this(in Options options) @safe {
+    this(in Options options) @trusted {
         import reggae.path: buildPath;
         import std.exception: enforce;
         import std.file: exists;
@@ -50,7 +50,12 @@ struct Dub {
         const path = buildPath(options.projectPath, "dub.selections.json");
         enforce(path.exists, "Cannot create dub instance without dub.selections.json");
 
-        _project = project(ProjectPath(options.projectPath));
+        import dub.dub: DubClass = Dub;
+        import dub.internal.vibecompat.inet.path: NativePath;
+
+        auto dub = fullDub(options.projectPath); // store as a member variable?
+        _project = dub.project;
+
         _extraDFlags = options.dflags.dup;
     }
 
@@ -58,9 +63,50 @@ struct Dub {
         return _options;
     }
 
-    auto getPackage(in string dubPackage, in string version_) @trusted /*dub*/ {
-        import dub.dependency: Version;
-        return _project.packageManager.getPackage(dubPackage, Version(version_));
+    imported!"reggae.dub.info".DubInfo[string] getDubInfos(O)(ref O output)
+    {
+        import reggae.io: log;
+        import reggae.path: buildPath;
+        import reggae.dub.info: DubInfo;
+        import std.file: exists;
+        import std.exception: enforce;
+
+        DubInfo[string] ret;
+
+        enforce(buildPath(options.projectPath, "dub.selections.json").exists,
+                "Cannot find dub.selections.json");
+
+        const configs = dubConfigurations(output);
+        const haveTestConfig = configs.test != "";
+        bool atLeastOneConfigOk;
+        Exception dubInfoFailure;
+
+        foreach(config; configs.configurations) {
+            const isTestConfig = haveTestConfig && config == configs.test;
+            try {
+                ret[config] = configToDubInfo(output, config, isTestConfig);
+                atLeastOneConfigOk = true;
+            } catch(Exception ex) {
+                output.log("ERROR: Could not get info for configuration ", config, ": ", ex.msg);
+                if(dubInfoFailure is null) dubInfoFailure = ex;
+            }
+        }
+
+        if(!atLeastOneConfigOk) {
+            assert(dubInfoFailure !is null,
+                   "Internal error: no configurations worked and no exception to throw");
+            throw dubInfoFailure;
+        }
+
+        ret["default"] = ret[configs.default_];
+
+        // (additionally) expose the special `dub test` config as
+        // `unittest` config in the DSL (`configToDubInfo`) (for
+        // `dubTest!()`, `dubBuild!(Configuration("unittest"))` etc.)
+        if(haveTestConfig && configs.test != "unittest" && configs.test in ret)
+            ret["unittest"] = ret[configs.test];
+
+        return ret;
     }
 
     private static auto getGeneratorSettings(in Options options) {
@@ -82,7 +128,24 @@ struct Dub {
         return ret;
     }
 
-    DubConfigurations getConfigs() {
+    imported!"reggae.dub.interop.configurations".DubConfigurations
+    dubConfigurations(O)(ref O output)
+    {
+        import reggae.dub.interop.configurations: DubConfigurations;
+        import reggae.io: log;
+
+        output.log("Getting dub configurations");
+        auto ret = getConfigs;
+        output.log("Number of dub configurations: ", ret.configurations.length);
+
+        // this happens e.g. the targetType is "none"
+        if(ret.configurations.length == 0)
+            return DubConfigurations([""], "", null);
+
+        return ret;
+    }
+
+    private DubConfigurations getConfigs() {
         import std.algorithm: filter, map, canFind;
         import std.array: array;
         import std.conv: text;
@@ -138,9 +201,6 @@ struct Dub {
             return DubConfigurations([actualConfig], actualConfig, testConfig);
         }
 
-        // A violation of the Law of Demeter caused by a dub bug.
-        // Otherwise _project.configurations would do, but it fails for one
-        // projet and no reduced test case was found.
         auto configurations = allConfigurationsAsStrings
             .save
             // exclude unittest config if there's a derived special one
@@ -150,7 +210,48 @@ struct Dub {
         return DubConfigurations(configurations, defaultConfig, testConfig);
     }
 
-    DubInfo configToDubInfo(in string config = "") @trusted /*dub*/ {
+    private imported!"reggae.dub.info".DubInfo configToDubInfo
+        (O)
+        (ref O output,
+         in string config,
+         in bool isTestConfig)
+    {
+        import reggae.io: log;
+        import std.conv: text;
+
+        output.log("Querying dub configuration '", config, "'");
+
+        auto dubInfo = configToDubInfo(config);
+
+        /**
+         For the `dub test` config, add `-unittest` (only for the main package, hence [0]).
+         [Similarly, `dub test` implies `--build=unittest`, with the unittest build type
+         being the debug one + `-unittest`.]
+
+         This enables (assuming no custom reggaefile.d):
+         * `reggae && ninja default ut`
+           => default `debug` build type for default config, extra `-unittest` for test config
+         * `reggae --dub-config=unittest && ninja`
+           => no need for extra `--dub-build-type=unittest`
+         */
+        if(isTestConfig) {
+            if(dubInfo.packages.length == 0)
+                throw new Exception(
+                    text("No main package in `", config, "` configuration"));
+            dubInfo.packages[0].dflags ~= "-unittest";
+        }
+
+        try
+            callPreBuildCommands(output, options.projectPath, dubInfo);
+        catch(Exception e) {
+            output.log("Error calling prebuild commands: ", e.msg);
+            throw e;
+        }
+
+        return dubInfo;
+    }
+
+    private DubInfo configToDubInfo(in string config = "") @trusted /*dub*/ {
         auto generator = new InfoGenerator(_project, _extraDFlags);
         auto settings = getGeneratorSettings(_options);
         settings.config = config;
@@ -160,92 +261,34 @@ struct Dub {
 }
 
 
-/// What it says on the tin
-struct ProjectPath {
-    string value;
-}
-
-/// Normally ~/.dub
-struct UserPackagesPath {
-    string value = "/dev/null";
-}
-
-/// Normally ~/.dub
-UserPackagesPath userPackagesPath() @safe {
-    import reggae.path: buildPath;
-    import std.process: environment;
-    import std.path: isAbsolute;
-    import std.file: getcwd;
-
-    version(Windows) {
-        immutable appDataDir = environment.get("APPDATA");
-        const path = buildPath(environment.get("LOCALAPPDATA", appDataDir), "dub");
-    } else version(Posix) {
-        string path = buildPath(environment.get("HOME"), ".dub/");
-        if(!path.isAbsolute)
-            path = buildPath(getcwd(), path);
-    } else
-          static assert(false, "Unknown system");
-
-    return UserPackagesPath(path);
-}
-
-struct SystemPackagesPath {
-    string value = "/dev/null";
-}
-
-
-SystemPackagesPath systemPackagesPath() @safe {
-    import reggae.path: buildPath;
-    import std.process: environment;
-
-    version(Windows)
-        const path = buildPath(environment.get("ProgramData"), "dub/");
-    else version(Posix)
-        const path = "/var/lib/dub/";
-    else
-        static assert(false, "Unknown system");
-
-    return SystemPackagesPath(path);
-}
-
-
-struct Path {
-    string value;
-}
-
-struct JSONString {
-    string value;
-}
-
-
-auto project(in ProjectPath projectPath) @safe {
-    return project(projectPath, systemPackagesPath, userPackagesPath);
-}
-
-
-auto project(in ProjectPath projectPath,
-             in SystemPackagesPath systemPackagesPath,
-             in UserPackagesPath userPackagesPath)
-    @trusted
-{
-    import dub.project: Project;
+public void fetchDubDeps(in string projectPath) @trusted {
+    import dub.dub: Dub, UpgradeOptions;
     import dub.internal.vibecompat.inet.path: NativePath;
 
-    auto pkgManager = packageManager(projectPath, systemPackagesPath, userPackagesPath);
-
-    return new Project(pkgManager, NativePath(projectPath.value));
+    scope dub = new Dub(projectPath);
+    dub.loadPackage();
+    dub.upgrade(UpgradeOptions.select);
 }
 
 
-private auto dubPackage(in ProjectPath projectPath) @trusted {
+// only exists because the dub API is "challenging" Only use this
+// function if a "full dub" is needed, since it will cause the package
+// recipe to be parsed, as well as all recipes for all packages
+// already downloaded. See other usages of the `Dub` class in this
+// module that don't do that on purpose for speed reasons.
+auto fullDub(in string projectPath) @trusted {
+    import dub.dub: DubClass = Dub;
     import dub.internal.vibecompat.inet.path: NativePath;
-    import dub.package_: Package;
-    return new Package(recipe(projectPath), NativePath(projectPath.value));
+
+    auto dub = new DubClass(projectPath);
+    dub.packageManager.getOrLoadPackage(NativePath(projectPath));
+    dub.loadPackage();
+    dub.project.validate();
+
+    return dub;
 }
 
-
-private auto recipe(in ProjectPath projectPath) @safe {
+private auto recipe(in string projectPath) @safe {
     import dub.recipe.packagerecipe: PackageRecipe;
     import dub.recipe.json: parseJson;
     import dub.recipe.sdl: parseSDL;
@@ -256,7 +299,7 @@ private auto recipe(in ProjectPath projectPath) @safe {
 
     string inProjectPath(in string path) {
         import reggae.path: buildPath;
-        return buildPath(projectPath.value, path);
+        return buildPath(projectPath, path);
     }
 
     if(inProjectPath("dub.sdl").exists) {
@@ -269,32 +312,8 @@ private auto recipe(in ProjectPath projectPath) @safe {
         () @trusted { parseJson(recipe, json, "" /*parent*/); }();
         return recipe;
     } else
-        throw new Exception("Could not find dub.sdl or dub.json in " ~ projectPath.value);
+        throw new Exception("Could not find dub.sdl or dub.json in " ~ projectPath);
 }
-
-
-auto packageManager(in ProjectPath projectPath,
-                    in SystemPackagesPath systemPackagesPath,
-                    in UserPackagesPath userPackagesPath)
-    @trusted
-{
-    import dub.internal.vibecompat.inet.path: NativePath;
-    import dub.packagemanager: PackageManager;
-
-    const packagePath = NativePath(projectPath.value);
-    const userPath = NativePath(userPackagesPath.value);
-    const systemPath = NativePath(systemPackagesPath.value);
-    const refreshPackages = false;
-
-    auto pkgManager = new PackageManager(packagePath, userPath, systemPath, refreshPackages);
-    // In dub proper, this initialisation is done in commandline.d
-    // in the function runDubCommandLine. If not not, subpackages
-    // won't work.
-    pkgManager.getOrLoadPackage(packagePath);
-
-    return pkgManager;
-}
-
 
 class InfoGenerator: imported!"dub.generators.generator".ProjectGenerator {
     import reggae.dub.info: DubPackage;
@@ -424,5 +443,33 @@ class InfoGenerator: imported!"dub.generators.generator".ProjectGenerator {
         pkg.lflags ~= settings.platform.compiler == "ldc"
             ? dflags.filter!(LDCCompiler.isLinkerDFlag).array // ldc2 / ldmd2
             : dflags.filter!(DMDCompiler.isLinkerDFlag).array;
+    }
+}
+
+// FIXME - this should be called by ninja/make/etc., not here
+private void callPreBuildCommands(O)(ref O output,
+                                     in string workDir,
+                                     in imported!"reggae.dub.info".DubInfo dubInfo)
+    @safe
+{
+    import reggae.io: log;
+    import std.process: executeShell, Config;
+    import std.string: replace;
+    import std.exception: enforce;
+    import std.conv: text;
+
+    const string[string] env = null;
+    Config config = Config.none;
+    size_t maxOutput = size_t.max;
+
+    if(dubInfo.packages.length == 0) return;
+
+    foreach(const package_; dubInfo.packages) {
+        foreach(const dubCommandString; package_.preBuildCommands) {
+            auto cmd = dubCommandString.replace("$project", workDir);
+            output.log("Executing pre-build command `", cmd, "`");
+            const ret = executeShell(cmd, env, config, maxOutput, workDir);
+            enforce(ret.status == 0, text("Error calling ", cmd, ":\n", ret.output));
+        }
     }
 }
