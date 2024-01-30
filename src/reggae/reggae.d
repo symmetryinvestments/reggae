@@ -337,7 +337,7 @@ private Binary buildReggaefileDub(O)(auto ref O output, in Options options) {
     // a custom compiler
     return Binary(
         getBuildGenName(options),
-        ["dub", "build", "--nodeps", "--skip-registry=all"], // since we now depend on dub at buildgen runtime
+        ["dub", "build"], // since we now depend on dub at buildgen runtime
     );
 }
 
