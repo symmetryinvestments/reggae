@@ -1,7 +1,7 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"dub": {"repository":"git+https://github.com/symmetryinvestments/dub.git","version":"651af70a1bc758556a19a23644f4582df63885a2"},
+		"dub": {"repository":"git+https://github.com/symmetryinvestments/dub.git","version":"e4a1c32aec028515abeee1688ffa9b4cb9ca9868"},
 		"unit-threaded": "2.1.7"
 	}
 }
