@@ -189,6 +189,7 @@ private string[] getJsonOutputArgs(in Options options) @safe {
 private void createBuild(T)(auto ref T output, in Options options) {
 
     import reggae.io: log;
+    import std.process: spawnProcess, wait;
 
     enforce(options.reggaeFilePath.exists, text("Could not find ", options.reggaeFilePath));
 
@@ -204,12 +205,10 @@ private void createBuild(T)(auto ref T output, in Options options) {
 
     //actually run the build generator
     output.log("Running the created binary to generate the build");
-    immutable retRunBuildgen = execute([buildPath(hiddenDirAbsPath(options), buildGenName)]);
-    enforce(retRunBuildgen.status == 0,
-            text("Couldn't execute the produced ", buildGenName, " binary:\n", retRunBuildgen.output));
+    immutable buildgenStatus = spawnProcess([buildPath(hiddenDirAbsPath(options), buildGenName)]).wait();
+    enforce(buildgenStatus == 0,
+            text("Executing the produced ", buildGenName, " binary failed"));
     output.log("Build generated");
-
-    if(retRunBuildgen.output.length) output.log(retRunBuildgen.output);
 }
 
 
@@ -290,7 +289,7 @@ private Binary buildReggaefileDub(O)(
     import std.path: buildPath;
     import std.algorithm: map, joiner;
     import std.range: chain, only;
-    import std.array: replace;
+    import std.array: replace, join;
 
      // calculates .dep so getReggaeFileDependenciesDlang works below
     calculateReggaeFileDeps(output, options);
@@ -318,13 +317,21 @@ private Binary buildReggaefileDub(O)(
     const dubRecipeDir = hiddenDirAbsPath(options);
     const dubRecipePath = buildPath(dubRecipeDir, "dub.sdl");
 
+    const linesIfBinary = [
+        `targetPath ".."`,
+        `targetName "build"`,
+    ];
+    const extraLines = options.backend == Backend.binary
+        ? linesIfBinary
+        : [];
+
     writeIfDiffers(
         output,
         dubRecipePath,
         reggaeFileDubSdl.format(
             userSourceFilesForDubSdl,
             importPathsForDubSdl,
-        ),
+        ) ~ extraLines.join("\n"),
     );
 
     writeIfDiffers(
@@ -499,7 +506,7 @@ private string getBuildGenName(in Options options) @safe pure nothrow {
     import reggae.rules.common: exeExt;
 
     const baseName =  options.backend == Backend.binary
-        ? buildPath("../build")
+        ? "../build"
         : "buildgen";
     return baseName ~ exeExt;
 }
