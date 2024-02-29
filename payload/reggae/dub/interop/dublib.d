@@ -29,16 +29,30 @@ static this() nothrow {
     }
 }
 
+private struct DubConfigurations {
+    string[] configurations;
+    string default_;
+    string test; // special `dub test` config
+
+    bool haveTestConfig() @safe @nogc pure nothrow scope const {
+        return test != "";
+    }
+
+    bool isTestConfig(in string config) @safe @nogc pure nothrow scope const {
+        return haveTestConfig && config == test;
+    }
+}
 
 package struct Dub {
-    import reggae.dub.interop.configurations: DubConfigurations;
     import reggae.dub.info: DubInfo;
     import reggae.options: Options;
     import dub.dub: DubClass = Dub;
+    import dub.generators.generator: GeneratorSettings;
 
     private DubClass _dub;
     private const string[] _extraDFlags;
     private const(Options) _options;
+    private GeneratorSettings _generatorSettings;
 
     this(in Options options) @trusted {
         import reggae.path: buildPath;
@@ -48,6 +62,7 @@ package struct Dub {
         _options = options;
         _dub = fullDub(options.projectPath);
         _extraDFlags = options.dflags.dup;
+        _generatorSettings = getGeneratorSettings(options);
     }
 
     const(Options) options() @safe @nogc pure nothrow const return scope {
@@ -76,14 +91,12 @@ package struct Dub {
         DubInfo[string] ret;
 
         const configs = dubConfigurations(output);
-        const haveTestConfig = configs.test != "";
         bool atLeastOneConfigOk;
         Exception dubInfoFailure;
 
         foreach(config; configs.configurations) {
-            const isTestConfig = haveTestConfig && config == configs.test;
             try {
-                ret[config] = configToDubInfo(output, config, isTestConfig);
+                ret[config] = configToDubInfo(output, config, configs.isTestConfig(config));
                 atLeastOneConfigOk = true;
             } catch(Exception ex) {
                 output.log("ERROR: Could not get info for configuration ", config, ": ", ex.msg);
@@ -102,7 +115,7 @@ package struct Dub {
         // (additionally) expose the special `dub test` config as
         // `unittest` config in the DSL (`configToDubInfo`) (for
         // `dubTest!()`, `dubBuild!(Configuration("unittest"))` etc.)
-        if(haveTestConfig && configs.test != "unittest" && configs.test in ret)
+        if(configs.haveTestConfig && configs.test != "unittest" && configs.test in ret)
             ret["unittest"] = ret[configs.test];
 
         return ret;
@@ -127,10 +140,7 @@ package struct Dub {
         return ret;
     }
 
-    imported!"reggae.dub.interop.configurations".DubConfigurations
-    dubConfigurations(O)(ref O output)
-    {
-        import reggae.dub.interop.configurations: DubConfigurations;
+    DubConfigurations dubConfigurations(O)(ref O output) {
         import reggae.io: log;
 
         output.log("Getting dub configurations");
@@ -150,12 +160,11 @@ package struct Dub {
         import std.conv: text;
 
         auto singleConfig = _options.dubConfig;
-        auto settings = getGeneratorSettings(_options);
         const allConfigs = singleConfig == "";
         // add the special `dub test` configuration (which doesn't require an existing `unittest` config)
         const lookingForUnitTestsConfig = allConfigs || singleConfig == "unittest";
         const testConfig = lookingForUnitTestsConfig
-            ? _dub.project.addTestRunnerConfiguration(settings)
+            ? _dub.project.addTestRunnerConfiguration(_generatorSettings)
             : null; // skip when requesting a single non-unittest config
 
         // error out if the test config is explicitly requested but not available
@@ -164,7 +173,7 @@ package struct Dub {
         }
 
         const haveSpecialTestConfig = testConfig.length && testConfig != "unittest";
-        const defaultConfig = _dub.project.getDefaultConfiguration(settings.platform);
+        const defaultConfig = _dub.project.getDefaultConfiguration(_generatorSettings.platform);
 
         // A violation of the Law of Demeter caused by a dub bug.
         // Otherwise _dub.project.configurations would do, but it fails for one
@@ -174,7 +183,7 @@ package struct Dub {
             .rootPackage
             .recipe
             .configurations
-            .filter!(c => c.matchesPlatform(settings.platform))
+            .filter!(c => c.matchesPlatform(_generatorSettings.platform))
             .map!(c => c.name)
             ;
 
@@ -252,7 +261,7 @@ package struct Dub {
 
     private DubInfo configToDubInfo(in string config = "") @trusted /*dub*/ {
         auto generator = new InfoGenerator(_dub.project, _extraDFlags);
-        auto settings = getGeneratorSettings(_options);
+        auto settings = _generatorSettings;
         settings.config = config;
         generator.generate(settings);
         return DubInfo(generator.dubPackages, _options.dup);
@@ -267,9 +276,33 @@ package struct Dub {
 // module that don't do that on purpose for speed reasons.
 auto fullDub(in string projectPath) @trusted {
     import dub.dub: DubClass = Dub;
+    import dub.packagemanager: PackageManager;
     import dub.internal.vibecompat.inet.path: NativePath;
 
-    auto dub = new DubClass(projectPath);
+    // Cache the PackageManager.
+    // A reggaefile.d with lots of dub{Package,Dependant} targets benefits from
+    // this, also depending on the size of the dub packages cache.
+    static class DubWithCachedPackageManager : DubClass {
+        this(string rootPath) {
+            super(rootPath);
+        }
+
+        override PackageManager makePackageManager() const {
+            static PackageManager cachedPM = null;
+            if (!cachedPM) {
+                // The PackageManager wants a path to a local directory, for an
+                // implicit `<local>/.dub/packages` repo. The base
+                // implementation uses the dub root project directory; use the
+                // reggae project directory as our local root.
+                import reggae.config: options;
+                auto localRoot = NativePath(options.projectPath);
+                cachedPM = new PackageManager(localRoot, m_dirs.userPackages, m_dirs.systemSettings, false);
+            }
+            return cachedPM;
+        }
+    }
+
+    auto dub = new DubWithCachedPackageManager(projectPath);
     dub.packageManager.getOrLoadPackage(NativePath(projectPath));
     dub.loadPackage();
     dub.project.validate();
