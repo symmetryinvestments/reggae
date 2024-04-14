@@ -88,6 +88,14 @@ struct BinaryT(T) {
     }
 
     void run(string[] args) @system { //@system due to parallel
+
+        version(unittest) {
+            scope(exit) {
+                import unit_threaded;
+                writelnUt(*output);
+            }
+        }
+
         auto binaryOptions = BinaryOptions(args);
 
         handleOptions(binaryOptions);
@@ -103,7 +111,6 @@ struct BinaryT(T) {
             didAnything = mainLoop(topTargets, binaryOptions, didAnything);
         else
             didAnything = mainLoop(topTargets.parallel, binaryOptions, didAnything);
-
 
         if(!didAnything) output.writeln("[build] Nothing to do");
     }
@@ -153,6 +160,7 @@ private:
     void handleTarget(Target target, ref bool didAnything) @safe {
         const outs = target.expandOutputs(options.projectPath);
         immutable depFileName = outs[0] ~ ".dep";
+
         if(depFileName.exists) {
             didAnything = checkDeps(target, depFileName) || didAnything;
         }
@@ -241,9 +249,14 @@ private:
 
     //Checks dependencies listed in the .dep file created by the compiler
     bool checkDeps(Target target, in string depFileName) @trusted {
+        import std.array: array;
+
         // byLine splits at `\n`, so open Windows text files with CRLF line terminators in non-binary mode
-        auto file = File(depFileName, "r");
-        auto lines = file.byLine.map!(a => a.to!string);
+        auto lines = File(depFileName, "r")
+            .byLine
+            .map!(a => a.to!string)
+            .array
+            ;
         auto dependencies = dependenciesFromFile(lines);
 
         if(anyNewer(options.projectPath, dependencies, target)) {
@@ -266,14 +279,15 @@ private:
 
     //@trusted because of mkdirRecurse
     private void mkDir(Target target) @trusted const {
+        import std.file: exists, mkdirRecurse;
+        import std.path: dirName;
+
         foreach(output; target.expandOutputs(options.projectPath)) {
-            import std.file: exists, mkdirRecurse;
-            import std.path: dirName;
-            if(!output.dirName.exists) mkdirRecurse(output.dirName);
+            if(!output.dirName.exists)
+                mkdirRecurse(output.dirName);
         }
     }
 }
-
 
 
 bool anyNewer(in string projectPath, in string[] dependencies, in Target target) @safe {
@@ -281,17 +295,20 @@ bool anyNewer(in string projectPath, in string[] dependencies, in Target target)
         any!(a => a[0].newerThan(a[1]));
 }
 
-
-
-
 string[] dependenciesFromFile(R)(R lines) if(isInputRange!R) {
-    import std.algorithm: map, filter, find;
-    import std.string: strip;
-    import std.array: empty, join, array, replace, split;
+    import std.algorithm: map, filter, find, endsWith;
+    import std.array: empty, join, array, split;
 
     if(lines.empty) return [];
+
+    static removeBackslash(in string str) {
+        return str.endsWith(` \`)
+            ? str[0 .. $-2]
+            : str;
+    }
+
     return lines
-        .map!(a => a.replace(`\`, ``).strip)
+        .map!removeBackslash
         .join(" ")
         .find(":")
         .split(" ")
